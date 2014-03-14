@@ -61,7 +61,7 @@ class EC2LatentBuildSlave(AbstractLatentBuildSlave):
                  spot_instance=False, max_spot_price=1.6, volumes=[],
                  placement=None, price_multiplier=1.2, retry=1,
                  retry_price_adjustment=1, product_description='Linux/UNIX',
-                 root_volume_size=None):
+                 root_volume_size=None, ebs_optimized=False):
 
         AbstractLatentBuildSlave.__init__(
             self, name, password, max_builds, notify_on_missing,
@@ -103,6 +103,7 @@ class EC2LatentBuildSlave(AbstractLatentBuildSlave):
         self.retry = retry
         self.attempt = 1
         self.product_description = product_description
+        self.ebs_optimized = ebs_optimized
         if root_volume_size is not None:
             root_volume = boto.ec2.blockdevicemapping.EBSBlockDeviceType()
             root_volume.size = root_volume_size
@@ -282,7 +283,7 @@ class EC2LatentBuildSlave(AbstractLatentBuildSlave):
             instance_type=self.instance_type, user_data=self.user_data,
             placement=self.placement, block_device_map=self.bdm)
         self.instance = reservation.instances[0]
-        instance_id, image_id, start_time = self._wait_for_instance(reservation)
+        instance_id, image_id, start_time = self._wait_for_instance(image)
         if None not in [instance_id, image_id, start_time]:
             return [instance_id, image_id, start_time]
         else:
@@ -374,7 +375,8 @@ class EC2LatentBuildSlave(AbstractLatentBuildSlave):
                                                         instance_type=self.instance_type,
                                                         user_data=self.user_data,
                                                         placement=self.placement,
-                                                        block_device_map=self.bdm)
+                                                        block_device_map=self.bdm,
+                                                        ebs_optimized=self.ebs_optimized)
         request, success = self._wait_for_request(reservations[0])
         if not success:
             return request, None, None, False
@@ -417,6 +419,32 @@ class EC2LatentBuildSlave(AbstractLatentBuildSlave):
                          self.instance.id))
             self.instance.update()
         if self.instance.state == RUNNING:
+            if self.ebs_optimized:
+                log.msg('%s %s restarting instance %s to optimize for EBS' %
+                        (self.__class__.__name__, self.slavename, self.instance.id))
+                self.instance.stop()
+                duration = 0
+                while self.instance.state != STOPPED:
+                    duration += interval
+                    time.sleep(interval)
+                    if duration % 60 == 0:
+                        log.msg('%s %s has waited %d minutes for instance %s to stop' %
+                                (self.__class__.__name__, self.slavename, duration//60,
+                                 self.instance.id))
+                    self.instance.update()
+                self.instance.modify_attribute('ebsOptimized', self.ebs_optimized)
+                self.instance.start()
+                time.sleep(5)
+                duration = 0
+                while self.instance.state == PENDING:
+                    self.instance.update()
+                    time.sleep(interval)
+                    duration += interval
+                    if duration % 60 == 0:
+                        log.msg('%s %s has waited %d minutes for instance %s to reboot' %
+                                (self.__class__.__name__, self.slavename, duration // 60,
+                                 self.instance.id))
+            self.instance.update()
             self.output = self.instance.get_console_output()
             minutes = duration // 60
             seconds = duration % 60
