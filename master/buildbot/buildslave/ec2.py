@@ -60,7 +60,8 @@ class EC2LatentBuildSlave(AbstractLatentBuildSlave):
                  build_wait_timeout=60 * 10, properties={}, locks=None,
                  spot_instance=False, max_spot_price=1.6, volumes=[],
                  placement=None, price_multiplier=1.2, retry=1,
-                 retry_price_adjustment=1, product_description='Linux/UNIX'):
+                 retry_price_adjustment=1, product_description='Linux/UNIX',
+                 root_volume_size=None):
 
         AbstractLatentBuildSlave.__init__(
             self, name, password, max_builds, notify_on_missing,
@@ -102,6 +103,13 @@ class EC2LatentBuildSlave(AbstractLatentBuildSlave):
         self.retry = retry
         self.attempt = 1
         self.product_description = product_description
+        if root_volume_size is not None:
+            root_volume = boto.ec2.blockdevicemapping.EBSBlockDeviceType()
+            root_volume.size = root_volume_size
+            self.bdm = boto.ec2.blockdevicemapping.BlockDeviceMapping()
+            self.bdm['/dev/sda1'] = root_volume
+        else:
+            self.bdm = None
         if None not in [placement, region]:
             self.placement = '%s%s' % (region, placement)
         else:
@@ -272,7 +280,7 @@ class EC2LatentBuildSlave(AbstractLatentBuildSlave):
         reservation = image.run(
             key_name=self.keypair_name, security_groups=[self.security_name],
             instance_type=self.instance_type, user_data=self.user_data,
-            placement=self.placement)
+            placement=self.placement, block_device_map=self.bdm)
         self.instance = reservation.instances[0]
         instance_id, image_id, start_time = self._wait_for_instance(reservation)
         if None not in [instance_id, image_id, start_time]:
@@ -365,7 +373,8 @@ class EC2LatentBuildSlave(AbstractLatentBuildSlave):
                                                         security_groups=[self.security_name],
                                                         instance_type=self.instance_type,
                                                         user_data=self.user_data,
-                                                        placement=self.placement)
+                                                        placement=self.placement,
+                                                        block_device_map=self.bdm)
         request, success = self._wait_for_request(reservations[0])
         if not success:
             return request, None, None, False
